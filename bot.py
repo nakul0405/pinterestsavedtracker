@@ -25,7 +25,7 @@ async def setuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await check_new_pins(update.effective_user.id)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg or "No new pins found.")
 
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
@@ -35,12 +35,22 @@ app.add_handler(CommandHandler("check", check))
 
 async def background_loop():
     while True:
+        # ✅ Ensure users.json exists
+        if not os.path.exists("users.json"):
+            with open("users.json", "w") as f:
+                json.dump({}, f)
+
         with open("users.json", "r") as f:
             users = json.load(f)
+
         for uid in users:
-            msg = await check_new_pins(int(uid))
-            if msg and "New Pins" in msg:
-                await app.bot.send_message(chat_id=int(uid), text=msg)
+            try:
+                msg = await check_new_pins(int(uid))
+                if msg and "New Pins" in msg:
+                    await app.bot.send_message(chat_id=int(uid), text=msg)
+            except Exception as e:
+                print(f"Error checking pins for {uid}: {e}")
+
         await asyncio.sleep(60)
 
 async def main():
