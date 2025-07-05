@@ -1,37 +1,59 @@
-import requests, os, json
+import requests
 from bs4 import BeautifulSoup
-from store import get_user_data
+import re
+import json
+import os
 
-def extract_pins(html, username):
-    soup = BeautifulSoup(html, "html.parser")
-    links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.startswith(f"/{username}/") and "/pin/" in href:
-            full = "https://www.pinterest.com" + href
-            if full not in links:
-                links.append(full)
-    return links
+def load_cookies():
+    try:
+        with open("cookies.json", "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print("⚠️ Failed to load cookies.json:", e)
+        return {}
 
-async def check_new_pins(user_id):
-    ud = get_user_data(user_id)
-    if not ud or not ud.get("cookie") or not ud.get("username"):
+def get_latest_pin(username, cookie=None):
+    url = f"https://www.pinterest.com/{username}/_saved/"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    cookies = load_cookies()  # load full cookies from cookies.json
+
+    # If a specific _pinterest_sess cookie is passed (e.g. via bot), override it
+    if cookie:
+        cookies["_pinterest_sess"] = cookie
+
+    try:
+        print(f"🔍 Scraping {username} with cookie: {url}")
+        res = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+
+        if res.status_code == 403 or "login" in res.url:
+            print("❌ Invalid or expired cookie – login required.")
+            return {"error": "invalid_cookie"}
+
+        if res.status_code != 200:
+            print(f"❌ Request failed: {res.status_code}")
+            return None
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        scripts = soup.find_all("script")
+
+        for script in scripts:
+            if "pinimg.com/originals" in script.text:
+                match = re.search(r'https://i\.pinimg\.com/originals/[^"]+', script.text)
+                if match:
+                    image_url = match.group(0)
+                    return {
+                        "image": image_url,
+                        "title": "Pinterest Pin",
+                        "link": url
+                    }
+
+        print("⚠️ No image pin found")
         return None
-    headers = {"Cookie": ud["cookie"], "User-Agent": "Mozilla/5.0"}
-    url = f"https://www.pinterest.com/{ud['username']}/saved/"
-    r = requests.get(url, headers=headers, timeout=10)
-    if "login" in r.url or r.status_code != 200:
-        return f"❌ Invalid/expired cookie or can't access saved page for @{ud['username']}."
-    new = extract_pins(r.text, ud["username"])
-    os.makedirs("data", exist_ok=True)
-    df = "data.json"
-    if not os.path.exists(df):
-        with open(df, "w") as f: json.dump({}, f)
-    data = json.load(open(df))
-    seen = data.get(str(user_id), [])
-    fresh = [l for l in new if l not in seen]
-    if fresh:
-        data[str(user_id)] = new
-        json.dump(data, open(df, "w"), indent=2)
-        return "📌 New Pins:\n" + "\n".join(fresh[:5])
-    return None
+
+    except Exception as e:
+        print(f"❌ Scraper error:", e)
+        return None
