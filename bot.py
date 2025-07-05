@@ -1,48 +1,57 @@
-import requests
-from bs4 import BeautifulSoup
-import json
-from store import get_user_data
+import asyncio, json, os
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from scraper import check_new_pins
+from store import save_user_cookie, save_target_user, get_user_data
 
-def extract_pins(html, username):
-    soup = BeautifulSoup(html, "html.parser")
-    boards = soup.find_all("a", href=True)
-    links = []
-    for a in boards:
-        href = a["href"]
-        if href.startswith(f"/{username}/") and "/pin/" in href:
-            links.append("https://www.pinterest.com" + href)
-    return links
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "PASTE_YOUR_BOT_TOKEN_HERE"
 
-async def check_new_pins(user_id):
-    user_data = get_user_data(user_id)
-    if not user_data: return "⚠️ Please set cookie and target user."
-    cookie = user_data["cookie"]
-    username = user_data["username"]
-    url = f"https://www.pinterest.com/{username}/saved/"
-    headers = {
-        "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0"
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-    except: return "❌ Failed to fetch data."
-    if "login" in res.url: return "❌ Invalid or expired cookie."
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Welcome to Pinterest Spy Bot!\nSend /setcookie <your _pinterest_sess cookie>")
 
-    new_links = extract_pins(res.text, username)
-    if not new_links: return "No saved pins found."
+async def setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /setcookie _pinterest_sess=...")
+    cookie = " ".join(context.args)
+    save_user_cookie(update.effective_user.id, cookie)
+    await update.message.reply_text("✅ Cookie saved. Now send /setuser <username>")
 
-    if not os.path.exists("data.json"):
-        with open("data.json", "w") as f: json.dump({}, f)
+async def setuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /setuser username")
+    username = context.args[0]
+    save_target_user(update.effective_user.id, username)
+    await update.message.reply_text(f"✅ Now tracking public saved pins of {username} every 60 sec.")
 
-    with open("data.json", "r") as f:
-        old_data = json.load(f)
+async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await check_new_pins(update.effective_user.id)
+    await update.message.reply_text(msg)
 
-    old_links = old_data.get(str(user_id), [])
-    fresh_links = [l for l in new_links if l not in old_links]
-    if fresh_links:
-        old_data[str(user_id)] = new_links
-        with open("data.json", "w") as f:
-            json.dump(old_data, f, indent=2)
-        return "📌 New Pins Saved:\n" + "\n".join(fresh_links[:5])
-    else:
-        return "No new pins found."
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("setcookie", setcookie))
+app.add_handler(CommandHandler("setuser", setuser))
+app.add_handler(CommandHandler("check", check))
+
+async def background_loop():
+    while True:
+        with open("users.json", "r") as f:
+            users = json.load(f)
+        for uid in users:
+            try:
+                msg = await check_new_pins(int(uid))
+                if msg != "No new pins found.":
+                    await app.bot.send_message(chat_id=uid, text=msg)
+            except Exception as e:
+                print(f"[!] Error for {uid}: {e}")
+        await asyncio.sleep(60)
+
+async def main():
+    await app.initialize()
+    await app.start()
+    asyncio.create_task(background_loop())
+    await app.updater.start_polling()
+    await app.updater.idle()
+
+if __name__ == "__main__":
+    asyncio.run(main())
